@@ -7,10 +7,11 @@ import json
 
 import config
 from guardrails import Guard, clean_answer, clean_result
-from llm import LLMError, chat
 from mcp_client import register_mcp_server
 from tools.registry import call_tool, tool_specs
-
+import time
+from llm import LLMError, chat_with_stats
+from tracing import Trace
 # Importing these modules is what registers their tools. No import, no tool.
 import tools.basic          # noqa: F401
 import tools.files          # noqa: F401
@@ -110,48 +111,75 @@ class Agent:
         self.guard.start_run()
         self.messages.append({"role": "user", "content": user_input})
 
-        for step in range(1, self.max_steps + 1):
-            msg = chat(self.messages, tools=tool_specs(self.allowed_tools))
-            self.messages.append(msg)
+        trace = Trace(
+            user_input=user_input,
+            model=config.CHAT_MODEL,
+            guard_mode=self.guard.mode,
+            tools_offered=len(tool_specs(self.allowed_tools)),
+        )
+        self.last_trace = trace
 
-            calls = msg.get("tool_calls")
-            if not calls:
-                return clean_answer(msg.get("content", ""))
+        try:
+            for step in range(1, self.max_steps + 1):
+                msg, stats = chat_with_stats(
+                    self.messages, tools=tool_specs(self.allowed_tools)
+                )
+                trace.model_step(step, stats)
+                self.messages.append(msg)
 
-            for call in calls:
-                fn = call["function"]
-                name = fn["name"]
-                args = fn.get("arguments") or {}
-                if isinstance(args, str):        # some models send a JSON string
-                    try:
-                        args = json.loads(args)
-                    except json.JSONDecodeError:
-                        args = {}
+                calls = msg.get("tool_calls")
+                if not calls:
+                    answer = clean_answer(msg.get("content", ""))
+                    trace.finish(answer=answer, status="ok")
+                    return answer
 
-                decision = self.guard.check(name, args)
+                for call in calls:
+                    fn = call["function"]
+                    name = fn["name"]
+                    args = fn.get("arguments") or {}
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            args = {}
 
-                if not decision.allowed:
-                    result = f"BLOCKED: {decision.reason} Do not try this again."
-                    outcome = "blocked"
-                elif decision.needs_approval and not self.guard.ask(name, args, decision.reason):
-                    result = "BLOCKED: the user refused permission for this action."
-                    outcome = "refused"
-                else:
-                    result = clean_result(name, call_tool(name, args))
-                    outcome = "ran"
+                    started = time.perf_counter()
+                    decision = self.guard.check(name, args)
 
-                self.guard.log(name, args, outcome)
+                    if not decision.allowed:
+                        result = f"BLOCKED: {decision.reason} Do not try this again."
+                        outcome = "blocked"
+                    elif decision.needs_approval and not self.guard.ask(name, args, decision.reason):
+                        result = "BLOCKED: the user refused permission for this action."
+                        outcome = "refused"
+                    else:
+                        result = clean_result(name, call_tool(name, args))
+                        outcome = "ran"
 
-                if self.verbose:
-                    print(f"  [{step}] {outcome}: {name}({args}) -> {result[:120]}")
+                    elapsed = time.perf_counter() - started
+                    self.guard.log(name, args, outcome)
+                    trace.tool_step(step, name, args, outcome, elapsed, result)
 
-                self.messages.append({
-                    "role": "tool",
-                    "tool_name": name,
-                    "content": result,
-                })
+                    if self.verbose:
+                        print(f"  [{step}] {outcome}: {name}({args}) "
+                              f"-> {result[:120]}  ({elapsed:.2f}s)")
 
-        return "[stopped: hit max_steps]"
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_name": name,
+                        "content": result,
+                    })
+
+            trace.finish(status="max_steps")
+            return "[stopped: hit max_steps]"
+
+        except Exception as e:
+            trace.finish(status="error", error=f"{type(e).__name__}: {e}")
+            raise
+        finally:
+            trace.save()
+            if self.verbose:
+                print(f"\n{trace.summary_line()}")
 
     def reset(self):
         self.messages = [{"role": "system", "content": self.system}]
