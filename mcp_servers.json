@@ -1,0 +1,14 @@
+{
+  "time": {
+    "command": "uvx",
+    "args": ["mcp-server-time"]
+  },
+  "_example_files": {
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "${WORKSPACE}"]
+  },
+  "_example_local_python_server": {
+    "command": "${PYTHON}",
+    "args": ["${PROJECT_ROOT}/mcp_server.py"]
+  }
+}

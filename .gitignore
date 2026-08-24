@@ -1,0 +1,15 @@
+# everything the agent creates at runtime
+data/
+
+# local settings
+.env
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# macOS
+.DS_Store
