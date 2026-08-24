@@ -12,6 +12,7 @@ SAFE = {           # only reads, changes nothing
     "get_current_time", "calculate",
     "list_files", "read_file", "search_files",
     "db_schema", "db_query",
+    "check_python",
     "web_search", "fetch_url",
     "kb_search", "kb_list",
     "graph_search", "graph_neighbours", "graph_stats",
@@ -98,6 +99,25 @@ class Decision:
         self.allowed = allowed
         self.needs_approval = needs_approval
         self.reason = reason
+
+
+def make_policy_approver(allowed_levels):
+    """Approve based on a pre-agreed list of risk levels instead of asking a human.
+
+    The API uses this: nobody is sitting at a terminal, so the caller states up
+    front what it is willing to allow, e.g. ["write"] or ["write", "danger"].
+    """
+    allowed = set(allowed_levels or [])
+
+    def approver(name, args, reason):
+        return risk_of(name) in allowed
+
+    return approver
+
+
+def deny_all_approver(name, args, reason):
+    """Refuse everything that needs approval. Useful in tests and evals."""
+    return False
 
 
 def terminal_approver(name, args, reason):

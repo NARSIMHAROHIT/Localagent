@@ -68,6 +68,10 @@ GUARD_MODE = os.environ.get("AGENT_GUARD_MODE", "ask")   # readonly | ask | auto
 MAX_STEPS = int(os.environ.get("AGENT_MAX_STEPS", "10"))
 MAX_TOOL_CALLS = int(os.environ.get("AGENT_MAX_TOOL_CALLS", "25"))
 
+API_KEY = os.environ.get("AGENT_API_KEY", "")            # empty = no auth (dev only)
+API_HOST = os.environ.get("AGENT_API_HOST", "127.0.0.1")
+API_PORT = int(os.environ.get("AGENT_API_PORT", "8000"))
+SESSION_TTL_MINUTES = int(os.environ.get("AGENT_SESSION_TTL", "60"))
 
 def ensure_dirs() -> None:
     """Create the folders the agent needs. Safe to call many times."""

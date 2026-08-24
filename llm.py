@@ -1,22 +1,50 @@
 """The only place that talks to Ollama. Messages in, one message out."""
 
+import re
 import time
 
 import requests
 
 from config import CHAT_MODEL, MAX_REPLY_TOKENS, NUM_CTX, OLLAMA_URL, THINKING
 
+THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+
 
 class LLMError(RuntimeError):
     pass
 
+
+def _no_think(messages):
+    """Older Ollama builds ignore the `think` field. Qwen3 also honours a
+    /no_think marker in the prompt, so add one to the last user message.
+
+    Builds a new list and a new dict, so the caller's history is not mutated.
+    """
+    out = list(messages)
+    for i in range(len(out) - 1, -1, -1):
+        if out[i].get("role") == "user":
+            content = out[i].get("content") or ""
+            if "/no_think" not in content:
+                out[i] = {**out[i], "content": content + " /no_think"}
+            break
+    return out
+
+
+def _strip_thinking(message):
+    """If the model reasoned anyway, keep only the real answer."""
+    content = message.get("content") or ""
+    if "</think>" in content:
+        message["content"] = THINK_BLOCK.sub("", content).strip()
+    return message
+
 def chat_with_stats(messages, tools=None, temperature=0.0, format=None, think=None):
     """Same as chat(), but also returns what the call cost."""
+    use_think = THINKING if think is None else think
     payload = {
         "model": CHAT_MODEL,
-        "messages": messages,
+        "messages": messages if use_think else _no_think(messages),
         "stream": False,
-        "think": THINKING if think is None else think,
+        "think": use_think,
         "options": {
             "temperature": temperature,
             "num_ctx": NUM_CTX,
@@ -60,12 +88,14 @@ def chat_with_stats(messages, tools=None, temperature=0.0, format=None, think=No
         "done_reason": body.get("done_reason", ""),
         "tools_offered": len(tools or []),
     }
-    return body["message"], stats
+    return _strip_thinking(body["message"]), stats
 
 
 def chat(messages, tools=None, temperature=0.0, format=None, think=None):
     """Messages in, one message out. Use chat_with_stats if you want the numbers."""
     message, _ = chat_with_stats(messages, tools, temperature, format, think)
     return message
+
+
 if __name__ == "__main__":
     print(chat([{"role": "user", "content": "Say hi in exactly five words."}]))

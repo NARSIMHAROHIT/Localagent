@@ -61,7 +61,7 @@ Rules:
 DEFAULT_TOOLS = [
     "get_current_time", "calculate",
     "list_files", "read_file", "write_file", "edit_file", "search_files",
-    "delete_file",
+    "delete_file", "check_python",
     "db_schema", "db_query", "db_insert", "db_update", "db_delete",
     "web_search", "fetch_url", "write_pdf",
     "kb_add_url", "kb_add_file", "kb_search", "kb_list",
@@ -107,7 +107,14 @@ class Agent:
         self.guard = guard or Guard()
         self.messages = [{"role": "system", "content": system}]
 
-    def run(self, user_input):
+    def run(self, user_input, on_event=None):
+        """Run one turn. Pass on_event to receive progress as it happens
+        (the API uses this for streaming)."""
+
+        def emit(**event):
+            if on_event:
+                on_event(event)
+
         self.guard.start_run()
         self.messages.append({"role": "user", "content": user_input})
 
@@ -121,6 +128,7 @@ class Agent:
 
         try:
             for step in range(1, self.max_steps + 1):
+                emit(type="thinking", step=step)
                 msg, stats = chat_with_stats(
                     self.messages, tools=tool_specs(self.allowed_tools)
                 )
@@ -143,6 +151,7 @@ class Agent:
                         except json.JSONDecodeError:
                             args = {}
 
+                    emit(type="tool", step=step, tool=name, args=args)
                     started = time.perf_counter()
                     decision = self.guard.check(name, args)
 
@@ -159,6 +168,8 @@ class Agent:
                     elapsed = time.perf_counter() - started
                     self.guard.log(name, args, outcome)
                     trace.tool_step(step, name, args, outcome, elapsed, result)
+                    emit(type="tool_result", step=step, tool=name, outcome=outcome,
+                         seconds=round(elapsed, 2), preview=result[:200])
 
                     if self.verbose:
                         print(f"  [{step}] {outcome}: {name}({args}) "

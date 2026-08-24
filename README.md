@@ -17,6 +17,8 @@ Roughly 1,500 lines of plain Python. Every part is meant to be readable.
   "how is X connected to Y" by walking the graph
 - **MCP** — use tools from other MCP servers, and publish its own tools to other apps
 - **Guardrails** — a permission policy with an approval prompt, plus secret redaction and an audit log
+- **Observability** — every run traced: timings, token counts, tool outcomes, replayable from disk
+- **HTTP API** — FastAPI with sessions, streaming, API-key auth and a small web UI
 
 ## Requirements
 
@@ -58,6 +60,10 @@ Localagent/
 ├── mcp_client.py         use other people's MCP tools
 ├── mcp_server.py         publish our tools over MCP
 ├── mcp_servers.json      which MCP servers to start
+├── api.py                the HTTP API
+├── tracing.py            records what happened during each run
+├── Dockerfile            container build
+├── web/index.html        a minimal streaming chat page
 ├── tools/
 │   ├── registry.py       @tool decorator, schemas, dispatcher
 │   ├── basic.py          time, arithmetic
@@ -73,7 +79,9 @@ Localagent/
     ├── workspace/        the only folder the file tools may touch
     ├── agent.db
     ├── knowledge.db
-    └── guard_log.jsonl
+    ├── guard_log.jsonl
+    ├── runs.jsonl        one line per run
+    └── traces/           the full record of each run
 ```
 
 ## Changing the folders
@@ -116,6 +124,68 @@ you> delete the file todo.txt
 ```
 
 The last one will stop and ask you first.
+
+## Running as an API
+
+```bash
+AGENT_API_KEY=secret123 uvicorn api:app --reload
+```
+
+Then open http://127.0.0.1:8000/docs, or open `web/index.html` in a browser for
+a streaming chat page.
+
+```bash
+curl -s localhost:8000/chat \
+  -H "X-API-Key: secret123" -H "Content-Type: application/json" \
+  -d '{"message":"what is 800+750"}'
+```
+
+Pass `session_id` to continue a conversation. Use `/chat/stream` to receive
+progress events as they happen instead of waiting in silence.
+
+Nobody is at a terminal to approve a risky action, so the caller pre-approves
+risk levels in the request instead:
+
+```json
+{"message": "delete todo.txt", "allow": ["danger"]}
+```
+
+Without that `allow`, the delete is refused automatically.
+
+Endpoints: `/health`, `/tools`, `/chat`, `/chat/stream`, `/sessions`,
+`/sessions/{id}`, `/traces`, `/traces/{id}`.
+
+### Docker
+
+```bash
+docker build -t localagent .
+docker run -p 8000:8000 \
+  -e AGENT_API_KEY=secret123 \
+  -v "$PWD/data:/data" \
+  --add-host=host.docker.internal:host-gateway \
+  localagent
+```
+
+## Seeing what it did
+
+Every run is recorded to `data/traces/`.
+
+```bash
+python scripts/trace.py            list recent runs
+python scripts/trace.py stats      totals and failure rates
+python scripts/trace.py 3f2a1b9c   one run, step by step
+python scripts/eval.py             run the test cases
+```
+
+Each answer in the REPL also prints a one-line summary:
+
+```
+[trace 4b1e9c] 3 model calls · 2 tools (0 failed) · model 18.4s + tools 0.31s · 5210 in / 284 out tokens
+```
+
+Useful things to watch: `tool_failures` points at a tool whose description or
+error messages need work, a growing `prompt_tokens` warns you before you hit the
+context limit, and `done_reason: length` means a reply was cut off mid-sentence.
 
 ## Safety
 
@@ -190,3 +260,10 @@ when to prefer them over local tools.
   costs none.
 - `web_search` scrapes DuckDuckGo's HTML. If the layout changes, swap in a search
   API — it is one function.
+- Reasoning models like Qwen3 write a long internal monologue by default, which
+  can triple the tokens per step. `llm.py` turns it off two ways: the `think`
+  field, plus a `/no_think` marker for older Ollama builds that ignore it.
+- `check_python` only parses; it never executes. There is deliberately no tool
+  that runs code.
+- The API serves one Ollama instance, so concurrent requests queue. Sessions live
+  in memory and are lost on restart.

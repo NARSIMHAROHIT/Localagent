@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Localagent</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --fg:#111; --dim:#666; --line:#ddd; --accent:#2563eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111; --fg:#eee; --dim:#999; --line:#333; --accent:#60a5fa; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 system-ui, sans-serif; }
+  .wrap { max-width:760px; margin:0 auto; padding:24px 16px 120px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:var(--dim); font-size:13px; margin-bottom:20px; }
+  .msg { padding:12px 14px; border-radius:10px; margin:10px 0; white-space:pre-wrap; word-wrap:break-word; }
+  .user { background:var(--accent); color:#fff; margin-left:15%; }
+  .bot { border:1px solid var(--line); }
+  .event { color:var(--dim); font:12px/1.5 ui-monospace, monospace; padding:2px 14px; }
+  .err { color:#dc2626; }
+  form { position:fixed; bottom:0; left:0; right:0; background:var(--bg);
+         border-top:1px solid var(--line); padding:12px 16px; }
+  .row { max-width:760px; margin:0 auto; display:flex; gap:8px; }
+  input[type=text] { flex:1; padding:10px 12px; border:1px solid var(--line);
+                     border-radius:8px; background:transparent; color:var(--fg); font-size:15px; }
+  button { padding:10px 18px; border:0; border-radius:8px; background:var(--accent);
+           color:#fff; font-size:15px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  label { font-size:12px; color:var(--dim); display:flex; align-items:center; gap:5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Localagent</h1>
+  <div class="sub">Streaming chat. Start the API with <code>uvicorn api:app</code>, then open this file.</div>
+  <div id="log"></div>
+</div>
+
+<form id="form">
+  <div class="row">
+    <input type="text" id="input" placeholder="Ask something..." autocomplete="off" autofocus>
+    <label><input type="checkbox" id="allowWrite" checked> write</label>
+    <label><input type="checkbox" id="allowDanger"> danger</label>
+    <button type="submit" id="send">Send</button>
+  </div>
+</form>
+
+<script>
+const API = "http://127.0.0.1:8000";
+const API_KEY = "";                       // set if AGENT_API_KEY is configured
+let sessionId = null;
+
+const log = document.getElementById("log");
+const form = document.getElementById("form");
+const input = document.getElementById("input");
+const send = document.getElementById("send");
+
+function add(cls, text) {
+  const el = document.createElement("div");
+  el.className = cls;
+  el.textContent = text;
+  log.appendChild(el);
+  window.scrollTo(0, document.body.scrollHeight);
+  return el;
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const message = input.value.trim();
+  if (!message) return;
+  input.value = "";
+  send.disabled = true;
+  add("msg user", message);
+
+  const allow = [];
+  if (document.getElementById("allowWrite").checked) allow.push("write");
+  if (document.getElementById("allowDanger").checked) allow.push("danger");
+
+  try {
+    const res = await fetch(API + "/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
+      body: JSON.stringify({ message, session_id: sessionId, allow }),
+    });
+    if (!res.ok) { add("event err", "HTTP " + res.status + ": " + await res.text()); return; }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop();
+
+      for (const part of parts) {
+        const line = part.split("\n").find(l => l.startsWith("data: "));
+        if (!line) continue;
+        const ev = JSON.parse(line.slice(6));
+
+        if (ev.type === "session")      sessionId = ev.session_id;
+        else if (ev.type === "thinking") add("event", "· thinking (step " + ev.step + ")");
+        else if (ev.type === "tool")     add("event", "· " + ev.tool + "(" + JSON.stringify(ev.args).slice(0, 80) + ")");
+        else if (ev.type === "tool_result") add("event", "  → " + ev.outcome + ", " + ev.seconds + "s");
+        else if (ev.type === "answer")   add("msg bot", ev.answer);
+        else if (ev.type === "error")    add("event err", ev.error);
+      }
+    }
+  } catch (err) {
+    add("event err", String(err));
+  } finally {
+    send.disabled = false;
+    input.focus();
+  }
+});
+</script>
+</body>
+</html>

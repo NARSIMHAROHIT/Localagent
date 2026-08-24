@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 from config import WORKSPACE_DIR
@@ -192,3 +193,27 @@ def delete_file(path: str) -> str:
     size = target.stat().st_size
     target.unlink()
     return f"Deleted '{path}' ({size} bytes)."
+
+
+@tool
+def check_python(path: str) -> str:
+    """Check a Python file for syntax errors WITHOUT running it. Use this after
+    you write or edit any Python code, to catch mistakes before the user does.
+
+    Args:
+        path: File path relative to the workspace root.
+    """
+    target = _resolve(path)
+    if not target.is_file():
+        raise SandboxError(f"no such file: '{path}'.")
+    try:
+        source = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise SandboxError(f"'{path}' is not a UTF-8 text file.")
+
+    try:
+        ast.parse(source, filename=str(target))
+    except SyntaxError as e:
+        return (f"SyntaxError in '{path}' line {e.lineno}, column {e.offset}: {e.msg}\n"
+                f"  {(e.text or '').rstrip()}")
+    return f"'{path}' parses cleanly ({len(source.splitlines())} lines)."
